@@ -1,0 +1,128 @@
+package main
+
+import (
+    "net/http"
+
+    "github.com/gin-gonic/gin"
+    "gorm.io/gorm"
+    "gorm.io/driver/postgres"
+)
+
+
+type album struct {
+    ID     string  `json:"id"`
+    Title  string  `json:"title"`
+    Artist string  `json:"artist"`
+    Price  float64 `json:"price"`
+}
+
+
+var albums = []album{
+    {ID: "1", Title: "Blue Train", Artist: "John Coltrane", Price: 56.99},
+    {ID: "2", Title: "Jeru", Artist: "Gerry Mulligan", Price: 17.99},
+    {ID: "3", Title: "Sarah Vaughan and Clifford Brown", Artist: "Sarah Vaughan", Price: 39.99},
+}
+
+var db *gorm.DB // Make db a package-level variable
+
+func main() {
+    // Initialize database
+    var err error
+    db, err = gorm.Open(postgres.Open("host=localhost user=postgres password=postgres dbname=postgres port=5433 sslmode=disable"), &gorm.Config{})
+    if err != nil {
+        panic("failed to connect database")
+    }
+    db.AutoMigrate(&album{})
+    db.Create(&album{ID: "1", Title: "Blue Train", Artist: "John Coltrane", Price: 56.99})
+
+    // Initialize router
+    router := gin.Default()
+    router.GET("/albums", getAlbums)
+    router.GET("/albums/:id", getAlbumByID)
+    router.POST("/albums", postAlbums)
+    router.PUT("/albums/:id", updateAlbumByID)
+    router.DELETE("/albums/:id", deleteAlbumByID)
+    router.Run(":8080")
+}
+
+
+func getAlbums(c *gin.Context) {
+    var dbAlbums []album
+    if err := db.Find(&dbAlbums).Error; err != nil {
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "could not fetch albums"})
+        return
+    }
+    c.IndentedJSON(http.StatusOK, dbAlbums)
+}
+
+
+func postAlbums(c *gin.Context) {
+    var newAlbum album
+
+    if err := c.BindJSON(&newAlbum); err != nil {
+        c.IndentedJSON(http.StatusBadRequest, gin.H{"message": "invalid request"})
+        return
+    }
+
+    // Save to the database
+    if err := db.Create(&newAlbum).Error; err != nil {
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "could not create album"})
+        return
+    }
+
+    c.IndentedJSON(http.StatusCreated, newAlbum)
+}
+
+func getAlbumByID(c *gin.Context) {
+    id := c.Param("id")
+
+    var a album
+    if err := db.First(&a, "id = ?", id).Error; err != nil {
+        c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+        return
+    }
+    c.IndentedJSON(http.StatusOK, a)
+}
+
+func updateAlbumByID(c *gin.Context) {
+    id := c.Param("id")
+    var updatedAlbum album
+
+    if err := c.BindJSON(&updatedAlbum); err != nil {
+        c.IndentedJSON(http.StatusBadRequest, gin.H{"message": "invalid request"})
+        return
+    }
+
+    var existingAlbum album
+    if err := db.First(&existingAlbum, "id = ?", id).Error; err != nil {
+        c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+        return
+    }
+
+    // Update fields
+    existingAlbum.Title = updatedAlbum.Title
+    existingAlbum.Artist = updatedAlbum.Artist
+    existingAlbum.Price = updatedAlbum.Price
+
+    db.Save(&existingAlbum)
+    c.IndentedJSON(http.StatusOK, existingAlbum)
+}
+
+func deleteAlbumByID(c *gin.Context) {
+    id := c.Param("id")
+    var album album
+
+    // Check if the album exists
+    if err := db.First(&album, "id = ?", id).Error; err != nil {
+        c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+        return
+    }
+
+    // Delete the album
+    if err := db.Delete(&album).Error; err != nil {
+        c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "could not delete album"})
+        return
+    }
+
+    c.IndentedJSON(http.StatusOK, gin.H{"message": "album deleted"})
+}
