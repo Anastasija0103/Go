@@ -1,0 +1,182 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+  )
+// Get JWT token
+func getAuthToken(t *testing.T, router *gin.Engine) string {
+	loginData := map[string]string{"username": "admin", "password": "password"}
+	jsonData, _ := json.Marshal(loginData)
+	req, _ := http.NewRequest("POST", "/login", bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	var response map[string]string
+	json.Unmarshal(w.Body.Bytes(), &response)
+	return response["token"]
+}
+
+// Authentication - Success
+func TestLoginSuccess(t *testing.T) {
+	router := setupTest()
+	
+	loginData := map[string]string{"username": "admin", "password": "password"}
+	jsonData, _ := json.Marshal(loginData)
+	req, _ := http.NewRequest("POST", "/login", bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	var response map[string]string
+	json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NotEmpty(t, response["token"])
+}
+// Authentication - Wrong Password
+func TestLoginWrongPassword(t *testing.T) {
+	router := setupTest()
+	
+	loginData := map[string]string{"username": "admin", "password": "wrongpassword"}
+	jsonData, _ := json.Marshal(loginData)
+	req, _ := http.NewRequest("POST", "/login", bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+// CRUD Operations WITH Authentication
+func TestCRUDWithAuth(t *testing.T) {
+	router := setupTest()
+	token := getAuthToken(t, router)
+	
+	// CREATE - With Auth
+	newAlbum := album{ID: "2", Title: "New Album", Artist: "New Artist", Price: 20.99}
+	jsonData, _ := json.Marshal(newAlbum)
+	req, _ := http.NewRequest("POST", "/albums", bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusCreated, w.Code)
+	
+	// READ - Get all albums
+	req, _ = http.NewRequest("GET", "/albums", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	var albums []album
+	json.Unmarshal(w.Body.Bytes(), &albums)
+	assert.Len(t, albums, 2) // Original + new album
+	
+	// READ - Get specific album
+	req, _ = http.NewRequest("GET", "/albums/2", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	var album album
+	json.Unmarshal(w.Body.Bytes(), &album)
+	assert.Equal(t, "New Album", album.Title)
+	
+	// UPDATE - With Auth
+	updateData := album{Title: "Updated Album", Artist: "Updated Artist", Price: 30.99}
+	jsonData, _ = json.Marshal(updateData)
+	req, _ = http.NewRequest("PUT", "/albums/2", bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	// Verify update
+	req, _ = http.NewRequest("GET", "/albums/2", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	json.Unmarshal(w.Body.Bytes(), &album)
+	assert.Equal(t, "Updated Album", album.Title)
+	
+	// DELETE - With Auth
+	req, _ = http.NewRequest("DELETE", "/albums/2", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	// Verify deletion
+	req, _ = http.NewRequest("GET", "/albums/2", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+// CRUD Operations WITHOUT Authentication
+func TestCRUDWithoutAuth(t *testing.T) {
+	router := setupTest()
+	
+	// CREATE - Without Auth 
+	newAlbum := album{ID: "3", Title: "Unauthorized Album", Artist: "Unauthorized Artist", Price: 15.99}
+	jsonData, _ := json.Marshal(newAlbum)
+	req, _ := http.NewRequest("POST", "/albums", bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	// No Authorization header
+	
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	
+	// READ - Without Auth 
+	req, _ = http.NewRequest("GET", "/albums", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	var albums []album
+	json.Unmarshal(w.Body.Bytes(), &albums)
+	assert.Len(t, albums, 1) // Only original album
+	
+	// READ - Get specific album 
+	req, _ = http.NewRequest("GET", "/albums/1", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	// UPDATE - Without Auth (should fail)
+	updateData := album{Title: "Should Not Update", Artist: "Should Not Update", Price: 0.00}
+	jsonData, _ = json.Marshal(updateData)
+	req, _ = http.NewRequest("PUT", "/albums/1", bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	
+	// DELETE - Without Auth 
+	req, _ = http.NewRequest("DELETE", "/albums/1", nil)
+	// No Authorization header
+	
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
